@@ -1,0 +1,305 @@
+---
+title: "Text Mining using tidy tools"
+author: "André Nascimento"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+# Text Mining using tidy tools
+
+**Sources**:\
+<https://www.tidytextmining.com/>\
+<https://juliasilge.github.io/tidytext/>\
+<https://github.com/libjohn/workshop_textmining>
+
+## Dependencies
+
+```{r}
+# install.packages("janeaustenr")
+library(janeaustenr) # provides 6 novels written by Jane Austen
+
+# install.packages("tidyverse")
+library(tidyverse) # data manipulation & plotting
+
+# install.packages("tidytext")
+library(tidytext) # provides additional text mining functions
+
+# install.packages("wordcloud2")
+library(wordcloud2) # world cloud plots
+```
+
+## Dataset
+
+We'll look at some books by Jane Austen, an 18th century novelist. Through the `janeaustenr` package we can access and mine the text of six Austen novels. We can call the collection of novels a corpra. An individual novel is a corpus.
+
+```{r}
+austen_books()
+```
+
+Austen is best know for six published works:
+
+```{r}
+austen_books() %>% 
+  distinct(book)
+```
+
+## Data Cleaning
+
+Text mining typically requires a lot of data cleaning. In this case, we start with the `janeaustenr` collection that has already been cleaned. Nonetheless, further data wrangling is required. First, identifying a line number for each line of text in each book.
+
+### Identify line numbers
+
+```{r}
+original_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(line = row_number()) %>%         # identify line numbers
+  ungroup()
+
+original_books
+```
+
+### Tokens
+
+To work with this data as a **tidy** dataset, we need to restructure the data through *tokenization*. In our case a token is a single word. We want **one-token-per-row**. The `unnest_tokens()` function (tidytext package) will convert a data frame with a text column into the one-token-per-row format.
+
+The default tokenizing mode is "words". With the `unnest_tokens()` function, tokens can be: **words**, characters, character_shingles, **ngrams**, skip_ngrams, **sentences**, lines, paragraphs, regex, tweets, and ptb (Penn Treebank).
+
+```{r}
+tidy_books <- original_books %>%
+  unnest_tokens(word, text)
+
+tidy_books
+```
+
+And as we can see, some preprocessing was performed was well, as parenthesis and other special characters and punctuation were removed.
+
+> Now that the data is in the one-word-per-row format, we can manipulate it with tidy tools like dplyr.
+
+### Stop Words
+
+**Stop words** are the words in a **stop list** which are filtered out before or after processing of natural language data (text) because they are insignificant.
+
+Now we'll proceed to remove the stop words from the books.
+
+```{r}
+stop_words <- get_stopwords(language = "en", source = "snowball")
+stop_words
+```
+
+```{r}
+matchwords_books <- tidy_books %>%
+  anti_join(stop_words)
+
+matchwords_books
+```
+
+### Calculate word frequency
+
+How many Austen countable words are there if we remove *snowball* stop-words?
+
+```{r}
+matchwords_books %>% 
+  count(word, sort = TRUE) 
+```
+
+### Word cloud
+
+```{r interactive word cloud, fig.width=10}
+matchwords_books %>%
+  count(word, sort = TRUE) %>%
+  head(100) %>% 
+  wordcloud2(size = .4, shape = 'triangle-forward', 
+             color = c("steelblue", "firebrick", "darkorchid"), 
+             backgroundColor = "salmon")
+
+```
+
+## Sentiment Analysis
+
+### Dictionaries
+
+There are a variety of methods and dictionaries that exist for evaluating the opinion or emotion in text. The tidytext package provides access to several sentiment lexicons. Three general-purpose lexicons are
+
+-   `AFINN` from [Finn Årup Nielsen](http://www2.imm.dtu.dk/pubdb/views/publication_details.php?id=6010),
+
+-   `bing` from [Bing Liu and collaborators](https://www.cs.uic.edu/~liub/FBS/sentiment-analysis.html), and
+
+-   `nrc` from [Saif Mohammad and Peter Turney](http://saifmohammad.com/WebPages/NRC-Emotion-Lexicon.htm).
+
+The `bing` lexicon categorizes words in a binary fashion into positive and negative categories.
+
+The `AFINN` lexicon assigns words with a score that runs between -5 and 5, with negative scores indicating negative sentiment and positive scores indicating positive sentiment.
+
+The `nrc` lexicon categorizes words in a binary fashion ("yes"/"no") into categories of positive, negative, anger, anticipation, disgust, fear, joy, sadness, surprise, and trust.
+
+```{r}
+head(get_sentiments("bing"))
+```
+
+```{r}
+head(get_sentiments("afinn"))
+```
+
+```{r}
+head(get_sentiments("nrc"))
+
+get_sentiments("nrc") %>% 
+  count(sentiment, sort = TRUE) 
+```
+
+### Bing
+
+Let's see what positive words exist in the bing dictionary. Then, count the frequency of those positive words that exist in *Emma*.
+
+```{r}
+positive <- get_sentiments("bing") %>%
+  filter(sentiment == "positive")                    # get POSITIVE words
+
+positive 
+
+tidy_books %>%
+  filter(book == "Emma") %>%                        # only the book _emma_
+  semi_join(positive) %>%                           # semi_join()
+  count(word, sort = TRUE)
+```
+
+Now let's do the same but for negative
+
+```{r}
+negative <- get_sentiments("bing") %>%
+  filter(sentiment == "negative")                    # get NEGATIVE words
+
+negative 
+
+tidy_books %>%
+  filter(book == "Emma") %>%                        # only the book _emma_
+  semi_join(negative) %>%                           # semi_join()
+  count(word, sort = TRUE)
+```
+
+#### Prepare to visualize sentiment score
+
+Match all the Austen books to the bing sentiment dictionary. Count the word frequency.
+
+```{r}
+tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book)
+```
+
+#### Calculate sentiment
+
+> **Algorithm:** sentiment = positive - negative
+
+Define a section of text.
+
+> "Small sections of text may not have enough words in them to get a good estimate of sentiment while really large sections can wash out narrative structure. For these books, using 80 lines works well, but this can vary depending on individual texts... -- [Text Mining with R](https://www.tidytextmining.com/sentiment.html)
+
+```{r echo=TRUE}
+bing <- get_sentiments("bing")
+
+janeaustensentiment <- tidy_books %>% 
+  inner_join(bing) %>% 
+  count(book, index = line %/% 80, sentiment) %>%                          # `%/%` = int division ; 80 lines / section
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%    # spread(sentiment, n, fill = 0)
+  mutate(sentiment = positive - negative)                                      # ALGO!!!
+  
+janeaustensentiment
+```
+
+**Visualizing**
+
+```{r bing all books sentiment score}
+janeaustensentiment %>%
+  ggplot(aes(index, sentiment, )) +
+  geom_col(show.legend = FALSE, fill = "cadetblue") +
+  geom_col(data = . %>% filter(sentiment < 0), show.legend = FALSE, fill = "firebrick") +
+  geom_hline(yintercept = 0, color = "goldenrod") +
+  facet_wrap(~ book, ncol = 2, scales = "free_x") 
+```
+
+#### Preparation: Most common positive and negative words
+
+```{r}
+bing_word_counts <- tidy_books %>%
+  inner_join(bing) %>%
+  count(word, sentiment, sort = TRUE)
+
+bing_word_counts
+```
+
+**Visualize it too**
+
+```{r positive and negative}
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+```
+
+### Comparing the 3 sentiment dictionaries
+
+Let's use all three sentiment lexicons and examine how the sentiment changes across the narrative arc of *Pride and Prejudice*.
+
+```{r}
+pride_prejudice <- tidy_books %>% 
+  filter(book == "Pride & Prejudice")
+
+pride_prejudice
+```
+
+Let's again calculate the sentiment using the previous algorithm: use integer division (`%/%`) to define larger sections of text that span multiple lines, and we can use the same pattern with [`count()`](https://dplyr.tidyverse.org/reference/count.html), [`pivot_wider()`](https://tidyr.tidyverse.org/reference/pivot_wider.html), and [`mutate()`](https://dplyr.tidyverse.org/reference/mutate.html) to find the net sentiment in each of these sections of text.
+
+```{r}
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = line %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(
+  pride_prejudice %>% 
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing et al."),
+  pride_prejudice %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative"))
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = line %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+```
+
+We now have an estimate of the net sentiment (positive - negative) in each chunk of the novel text for each sentiment lexicon. Let's bind them together and **visualize them:**
+
+```{r 3 dicts sentiment score}
+bind_rows(afinn, bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+Check why NRC is so positive biased:
+
+```{r}
+get_sentiments("nrc") %>% 
+  filter(sentiment %in% c("positive", "negative")) %>% 
+  count(sentiment)
+```
+
+```{r}
+get_sentiments("bing") %>% 
+  count(sentiment)
+```
+
+Both lexicons have more negative than positive words, but the ratio of negative to positive words is higher in the Bing lexicon than the NRC lexicon!
